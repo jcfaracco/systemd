@@ -178,6 +178,66 @@ static int plot_unit_times(UnitTimes *u, double width, int y) {
         return 1;
 }
 
+static int generate_tracer_event(JsonVariant **array, const char *category, char *name, double start, double end, int pid, int tid) {
+        _cleanup_(json_variant_unrefp) JsonVariant *B = NULL;
+        _cleanup_(json_variant_unrefp) JsonVariant *E = NULL;
+        _cleanup_(json_variant_unrefp) JsonVariant *ts_b = NULL;
+        _cleanup_(json_variant_unrefp) JsonVariant *ts_e = NULL;
+        int r = 0;
+
+        r = json_variant_set_field_string(&B, "cat", category);
+        r = json_variant_set_field_string(&E, "cat", category);
+
+        r = json_variant_set_field_string(&B, "name", name);
+        r = json_variant_set_field_string(&E, "name", name);
+
+        r = json_variant_set_field_string(&B, "ph", "B");
+        r = json_variant_set_field_string(&E, "ph", "E");
+
+        /* we need to convert from ms to s */
+        r = json_variant_new_real(&ts_b, start);
+        r = json_variant_new_real(&ts_e, end);
+
+        r = json_variant_set_field(&B, "ts", ts_b);
+        r = json_variant_set_field(&E, "ts", ts_e);
+
+        r = json_variant_set_field_unsigned(&B, "pid", pid);
+        r = json_variant_set_field_unsigned(&E, "pid", pid);
+
+        r = json_variant_set_field_unsigned(&B, "tid", tid);
+        r = json_variant_set_field_unsigned(&E, "tid", tid);
+
+        r = json_variant_append_array(array, B);
+        r = json_variant_append_array(array, E);
+
+        return r;
+}
+
+static int plot_unit_times_json(UnitTimes *u, JsonVariant **array, int y) {
+        JsonVariant *arr = *array;
+        int r = 1;
+
+        if (!u->name)
+                return 0;
+
+        if (!json_variant_is_array(arr)) {
+                return 0;
+        }
+
+        if (generate_tracer_event(&arr, "kernel", u->name, u->activating, u->activated, 0, y) < 0)
+                r = 0;
+
+        if (generate_tracer_event(&arr, "kernel", u->name, u->activated, u->deactivating, 0, y) < 0)
+                r = 0;
+
+        if (generate_tracer_event(&arr, "kernel", u->name, u->deactivating, u->deactivated, 0, y) < 0)
+                r = 0;
+
+        *array = arr;
+
+        return r;
+}
+
 int verb_plot(int argc, char *argv[], void *userdata) {
         _cleanup_(free_host_infop) HostInfo *host = NULL;
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
@@ -320,7 +380,24 @@ int verb_plot(int argc, char *argv[], void *userdata) {
                svg("<g transform=\"translate(%.3f,100)\">\n", 20.0 + (SCALE_X * boot->firmware_time));
                svg_graph_box(m, -(double) boot->firmware_time, boot->finish_time);
         } else {
-                r = json_variant_set_field_string(&root, "displayTimeUnit", "ns");
+                _cleanup_(json_variant_unrefp) JsonVariant *traces = NULL;
+                _cleanup_(json_variant_unrefp) JsonVariant *other = NULL;
+
+                r = json_build(&traces, JSON_BUILD_EMPTY_ARRAY);
+
+                for (u = times; u->has_data; u++) {
+                        y += plot_unit_times_json(u, &traces, y);
+                }
+
+                r = json_build(&root, JSON_BUILD_OBJECT(JSON_BUILD_PAIR("traceEvents", JSON_BUILD_VARIANT(traces))));
+
+                r = json_variant_set_field_string(&root, "displayTimeUnit", "ms");
+                r = json_variant_set_field_string(&root, "systemTraceEvents", "SystemTraceData");
+
+                r = json_variant_set_field_string(&other, "version", GIT_VERSION);
+
+                r = json_variant_set_field(&root, "otherData", other);
+
                 json_variant_dump(root, json_output, stdout, NULL);
         }
 
