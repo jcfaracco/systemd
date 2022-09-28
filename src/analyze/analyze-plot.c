@@ -178,37 +178,76 @@ static int plot_unit_times(UnitTimes *u, double width, int y) {
         return 1;
 }
 
-static int generate_tracer_event(JsonVariant **array, const char *category, char *name, double start, double end, int pid, int tid) {
-        _cleanup_(json_variant_unrefp) JsonVariant *B = NULL;
-        _cleanup_(json_variant_unrefp) JsonVariant *E = NULL;
-        _cleanup_(json_variant_unrefp) JsonVariant *ts_b = NULL;
-        _cleanup_(json_variant_unrefp) JsonVariant *ts_e = NULL;
+static int generate_tracer_metadata(JsonVariant **array, char *name, int pid, int tid) {
+        _cleanup_(json_variant_unrefp) JsonVariant *M = NULL;
+        _cleanup_(json_variant_unrefp) JsonVariant *args = NULL;
         int r = 0;
 
-        r = json_variant_set_field_string(&B, "cat", category);
-        r = json_variant_set_field_string(&E, "cat", category);
+        r = json_variant_set_field_string(&M, "cat", "__metadata");
 
-        r = json_variant_set_field_string(&B, "name", name);
-        r = json_variant_set_field_string(&E, "name", name);
+        r = json_variant_set_field_string(&M, "name", "thread_name");
 
-        r = json_variant_set_field_string(&B, "ph", "B");
-        r = json_variant_set_field_string(&E, "ph", "E");
+        r = json_variant_set_field_string(&M, "ph", "M");
+
+        r = json_variant_set_field_unsigned(&M, "pid", pid);
+
+        r = json_variant_set_field_unsigned(&M, "tid", tid);
+
+        r = json_variant_set_field_unsigned(&M, "thread_sort_index", tid);
+
+        r = json_variant_set_field_string(&args, "name", name);
+
+        r = json_variant_set_field(&M, "args", args);
+
+        r = json_variant_append_array(array, M);
+
+        return r;
+}
+
+static int generate_tracer_event(JsonVariant **array, const char *category, char *name, double start, double step, double end, int pid, int tid, const char *color) {
+        _cleanup_(json_variant_unrefp) JsonVariant *X = NULL;
+        _cleanup_(json_variant_unrefp) JsonVariant *ts_x = NULL;
+        _cleanup_(json_variant_unrefp) JsonVariant *dur = NULL;
+        _cleanup_(json_variant_unrefp) JsonVariant *tdur = NULL;
+        double tdur_step;
+        int r = 0;
+
+        if (end - start <= 0)
+                return r;
+
+        r = json_variant_set_field_string(&X, "cat", category);
+
+        r = json_variant_set_field_string(&X, "name", name);
+
+        r = json_variant_set_field_string(&X, "ph", "X");
 
         /* we need to convert from ms to s */
-        r = json_variant_new_real(&ts_b, start);
-        r = json_variant_new_real(&ts_e, end);
+        r = json_variant_new_real(&ts_x, start);
 
-        r = json_variant_set_field(&B, "ts", ts_b);
-        r = json_variant_set_field(&E, "ts", ts_e);
+        if (step > 0.0) {
+                tdur_step = step - start;
 
-        r = json_variant_set_field_unsigned(&B, "pid", pid);
-        r = json_variant_set_field_unsigned(&E, "pid", pid);
+                if (tdur_step <= 0.0)
+                        /* A 1 ms workaround for pretty plot */
+                        tdur_step = 1.0;
 
-        r = json_variant_set_field_unsigned(&B, "tid", tid);
-        r = json_variant_set_field_unsigned(&E, "tid", tid);
+                r = json_variant_new_real(&tdur, tdur_step);
 
-        r = json_variant_append_array(array, B);
-        r = json_variant_append_array(array, E);
+                r = json_variant_set_field(&X, "tdur", tdur);
+        }
+
+        r = json_variant_new_real(&dur, end - start);
+
+        r = json_variant_set_field(&X, "ts", ts_x);
+        r = json_variant_set_field(&X, "dur", dur);
+
+        r = json_variant_set_field_unsigned(&X, "pid", pid);
+
+        r = json_variant_set_field_unsigned(&X, "tid", tid);
+
+        r = json_variant_set_field_string(&X, "cname", color);
+
+        r = json_variant_append_array(array, X);
 
         return r;
 }
@@ -224,13 +263,13 @@ static int plot_unit_times_json(UnitTimes *u, JsonVariant **array, int y) {
                 return 0;
         }
 
-        if (generate_tracer_event(&arr, "kernel", u->name, u->activating, u->activated, 0, y) < 0)
+        if (generate_tracer_event(&arr, "kernel", u->name, u->activating, u->activated, u->deactivating, 0, y, "thread_state_iowait") < 0)
                 r = 0;
 
-        if (generate_tracer_event(&arr, "kernel", u->name, u->activated, u->deactivating, 0, y) < 0)
+        if (generate_tracer_event(&arr, "kernel", u->name, u->deactivating, 0.0, u->deactivated, 0, y, "thread_state_unknown") < 0)
                 r = 0;
 
-        if (generate_tracer_event(&arr, "kernel", u->name, u->deactivating, u->deactivated, 0, y) < 0)
+        if (generate_tracer_metadata(&arr, u->name, 0, y) < 0)
                 r = 0;
 
         *array = arr;
